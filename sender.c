@@ -40,6 +40,7 @@ int main() {
 
   char buf[2000];
   long i = 0;
+  long budget = 0;
 
   while (1) {
     struct timespec wake;
@@ -48,6 +49,11 @@ int main() {
     wake.tv_nsec = nsec % 1000000000LL;
 
     clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &wake, NULL);
+
+    budget += 310;
+    if (budget > 1000) {
+      budget = 1000; // Cap to prevent bursting
+    }
 
     int n = poll(&pfd, 1, 0);
     if (n > 0 && (pfd.revents & POLLIN)) {
@@ -66,8 +72,11 @@ int main() {
         memcpy(out_buf, &internal_seq, 2);
         memcpy(out_buf + 2, buf + 4, 160);
 
-        sendto(out_sock, out_buf, 162, 0, (struct sockaddr *)&out_addr,
-               sizeof(out_addr));
+        if (budget >= 162) {
+          budget -= 162;
+          sendto(out_sock, out_buf, 162, 0, (struct sockaddr *)&out_addr,
+                 sizeof(out_addr));
+        }
       }
     }
     i++;
