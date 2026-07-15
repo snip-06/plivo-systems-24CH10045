@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <poll.h>
 #include <time.h>
+#include <stdint.h>
 
 #define HARNESS_IN_PORT 47010
 #define RELAY_OUT_PORT 47001
@@ -46,15 +47,24 @@ int main() {
         wake.tv_sec = t0.tv_sec + nsec / 1000000000LL;
         wake.tv_nsec = nsec % 1000000000LL;
 
-        // Use CLOCK_REALTIME because T0 from Python time.time() is wall clock time
         clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &wake, NULL);
 
-        int n = poll(&pfd, 1, 0); // non-blocking poll
+        int n = poll(&pfd, 1, 0); 
         if (n > 0 && (pfd.revents & POLLIN)) {
             int len = recv(in_sock, buf, sizeof(buf), 0);
-            if (len > 0) {
-                // blindly send to relay
-                sendto(out_sock, buf, len, 0, (struct sockaddr *)&out_addr, sizeof(out_addr));
+            if (len == 164) {
+                // Harness provides 4-byte uint32_t seq (network order) + 160-byte payload
+                uint32_t harness_seq;
+                memcpy(&harness_seq, buf, 4);
+                harness_seq = ntohl(harness_seq);
+                
+                // Construct internal wire packet: 2-byte uint16_t seq + 160-byte payload
+                char out_buf[162];
+                uint16_t internal_seq = htons((uint16_t)harness_seq);
+                memcpy(out_buf, &internal_seq, 2);
+                memcpy(out_buf + 2, buf + 4, 160);
+                
+                sendto(out_sock, out_buf, 162, 0, (struct sockaddr *)&out_addr, sizeof(out_addr));
             }
         }
         i++;

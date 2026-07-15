@@ -5,6 +5,8 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <poll.h>
+#include <stdint.h>
+#include <stdbool.h>
 
 #define RELAY_IN_PORT 47002
 #define HARNESS_OUT_PORT 47020
@@ -26,14 +28,43 @@ int main() {
     struct pollfd pfd = { .fd = in_sock, .events = POLLIN };
     
     char buf[2000];
+    uint32_t highest_seq = 0;
+    bool has_received = false;
 
     while (1) {
-        int n = poll(&pfd, 1, 40); // 40ms timeout
+        int n = poll(&pfd, 1, 40); 
         if (n > 0 && (pfd.revents & POLLIN)) {
             int len = recv(in_sock, buf, sizeof(buf), 0);
-            if (len > 0) {
-                // blindly forward to playout
-                sendto(out_sock, buf, len, 0, (struct sockaddr *)&out_addr, sizeof(out_addr));
+            if (len >= 162) {
+                // Read 2-byte internal sequence number
+                uint16_t internal_seq_net;
+                memcpy(&internal_seq_net, buf, 2);
+                uint16_t internal_seq = ntohs(internal_seq_net);
+                
+                // Widen back to 32-bit sequence number (handling epoch wraps)
+                uint32_t epoch = highest_seq & 0xFFFF0000;
+                uint32_t seq32 = epoch | internal_seq;
+                
+                if (has_received) {
+                    if (seq32 < highest_seq && (highest_seq - seq32) > 32768) {
+                        seq32 += 0x10000; // Wrapped around forward
+                    } else if (seq32 > highest_seq && (seq32 - highest_seq) > 32768) {
+                        seq32 -= 0x10000; // Old packet from previous epoch
+                    }
+                }
+                
+                if (!has_received || seq32 > highest_seq) {
+                    highest_seq = seq32;
+                    has_received = true;
+                }
+
+                // Reconstruct harness packet: 4-byte seq (network order) + 160-byte payload
+                char out_buf[164];
+                uint32_t harness_seq_net = htonl(seq32);
+                memcpy(out_buf, &harness_seq_net, 4);
+                memcpy(out_buf + 4, buf + 2, 160);
+                
+                sendto(out_sock, out_buf, 164, 0, (struct sockaddr *)&out_addr, sizeof(out_addr));
             }
         }
     }
