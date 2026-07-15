@@ -7,9 +7,17 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <time.h>
+
+uint64_t current_time_ms() {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
 
 #define RELAY_IN_PORT 47002
 #define HARNESS_OUT_PORT 47020
+#define RELAY_ARQ_OUT_PORT 47003
 
 int main() {
   char *duration_str = getenv("DURATION_S");
@@ -21,6 +29,9 @@ int main() {
     BUF_SIZE = 1024;
 
   bool *played = calloc(BUF_SIZE, sizeof(bool));
+  uint8_t *nack_count = calloc(BUF_SIZE, sizeof(uint8_t));
+  uint64_t *last_nack_time = calloc(BUF_SIZE, sizeof(uint64_t));
+  uint64_t *first_miss_time = calloc(BUF_SIZE, sizeof(uint64_t));
 
   int in_sock = socket(AF_INET, SOCK_DGRAM, 0);
   struct sockaddr_in in_addr = {0};
@@ -34,6 +45,12 @@ int main() {
   out_addr.sin_family = AF_INET;
   out_addr.sin_port = htons(HARNESS_OUT_PORT);
   out_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+  int arq_out_sock = socket(AF_INET, SOCK_DGRAM, 0);
+  struct sockaddr_in arq_out_addr = {0};
+  arq_out_addr.sin_family = AF_INET;
+  arq_out_addr.sin_port = htons(RELAY_ARQ_OUT_PORT);
+  arq_out_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
   struct pollfd pfd = {.fd = in_sock, .events = POLLIN};
 
@@ -100,8 +117,42 @@ int main() {
         }
       }
     }
+
+    // Gap detection & NACK sending
+    uint64_t now = current_time_ms();
+    uint32_t start_seq = (highest_seq > 50) ? highest_seq - 50 : 0;
+    for (uint32_t s = start_seq; s < highest_seq; s++) {
+        size_t idx = s % BUF_SIZE;
+        if (!played[idx]) {
+            if (first_miss_time[idx] == 0) first_miss_time[idx] = now;
+            
+            bool should_nack = false;
+            if (nack_count[idx] == 0) {
+                // Send NACK if there's a big gap or it's been missing for >40ms
+                if (highest_seq > s + 2 || (now - first_miss_time[idx] >= 40)) {
+                    should_nack = true;
+                }
+            } else if (nack_count[idx] < 2) {
+                // Send retry NACK if 85ms timeout expired
+                if (now - last_nack_time[idx] >= 85) {
+                    should_nack = true;
+                }
+            }
+            
+            if (should_nack) {
+                nack_count[idx]++;
+                last_nack_time[idx] = now;
+                
+                uint16_t missing_seq_net = htons((uint16_t)s);
+                sendto(arq_out_sock, &missing_seq_net, 2, 0, (struct sockaddr *)&arq_out_addr, sizeof(arq_out_addr));
+            }
+        }
+    }
   }
 
   free(played);
+  free(nack_count);
+  free(last_nack_time);
+  free(first_miss_time);
   return 0;
 }
