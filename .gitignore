@@ -1,10 +1,17 @@
-Systems_assignment.pdf
-*.pdf
-IMPLEMENTATION_PLAN.md
+# Binaries
 sender
 receiver
 sender.exe
 receiver.exe
+
+# Build artifacts
+__pycache__/
+
+# Runtime outputs
 playout_log.json
 relay_stats.json
-__pycache__/
+
+# Assignment / planning docs (not deliverables)
+Systems_assignment.pdf
+*.pdf
+IMPLEMENTATION_PLAN.md
