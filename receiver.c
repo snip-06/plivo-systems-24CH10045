@@ -12,6 +12,15 @@
 #define HARNESS_OUT_PORT 47020
 
 int main() {
+    char *duration_str = getenv("DURATION_S");
+    double duration = duration_str ? atof(duration_str) : 30.0;
+    
+    // Calculate dynamic BUF_SIZE for deduplication
+    size_t BUF_SIZE = (size_t)(duration * 50 + 100);
+    if (BUF_SIZE < 1024) BUF_SIZE = 1024;
+    
+    bool *played = calloc(BUF_SIZE, sizeof(bool));
+
     int in_sock = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in in_addr = {0};
     in_addr.sin_family = AF_INET;
@@ -58,6 +67,12 @@ int main() {
                     has_received = true;
                 }
 
+                // Check played bitmap to drop duplicates
+                if (played[seq32 % BUF_SIZE]) {
+                    continue; // Silently drop duplicate packet
+                }
+                played[seq32 % BUF_SIZE] = true;
+
                 // Reconstruct harness packet: 4-byte seq (network order) + 160-byte payload
                 char out_buf[164];
                 uint32_t harness_seq_net = htonl(seq32);
@@ -69,5 +84,6 @@ int main() {
         }
     }
 
+    free(played);
     return 0;
 }
