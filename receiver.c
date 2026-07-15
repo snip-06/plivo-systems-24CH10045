@@ -45,7 +45,7 @@ int main() {
     int n = poll(&pfd, 1, 40);
     if (n > 0 && (pfd.revents & POLLIN)) {
       int len = recv(in_sock, buf, sizeof(buf), 0);
-      if (len >= 162) {
+      if (len == 162 || len == 323) {
         // Read 2-byte internal sequence number
         uint16_t internal_seq_net;
         memcpy(&internal_seq_net, buf, 2);
@@ -68,21 +68,36 @@ int main() {
           has_received = true;
         }
 
-        // Check played bitmap to drop duplicates
-        if (played[seq32 % BUF_SIZE]) {
-          continue; // Silently drop duplicate packet
+        // Process the primary payload
+        if (!played[seq32 % BUF_SIZE]) {
+          played[seq32 % BUF_SIZE] = true;
+          
+          char out_buf[164];
+          uint32_t harness_seq_net = htonl(seq32);
+          memcpy(out_buf, &harness_seq_net, 4);
+          memcpy(out_buf + 4, buf + 2, 160);
+          
+          sendto(out_sock, out_buf, 164, 0, (struct sockaddr *)&out_addr, sizeof(out_addr));
         }
-        played[seq32 % BUF_SIZE] = true;
 
-        // Reconstruct harness packet: 4-byte seq (network order) + 160-byte
-        // payload
-        char out_buf[164];
-        uint32_t harness_seq_net = htonl(seq32);
-        memcpy(out_buf, &harness_seq_net, 4);
-        memcpy(out_buf + 4, buf + 2, 160);
-
-        sendto(out_sock, out_buf, 164, 0, (struct sockaddr *)&out_addr,
-               sizeof(out_addr));
+        // If FEC is attached, try to recover it
+        if (len == 323) {
+          uint8_t fec_offset = buf[162];
+          if (seq32 >= fec_offset) {
+            uint32_t fec_seq = seq32 - fec_offset;
+            
+            if (!played[fec_seq % BUF_SIZE]) {
+              played[fec_seq % BUF_SIZE] = true;
+              
+              char out_buf[164];
+              uint32_t fec_harness_seq_net = htonl(fec_seq);
+              memcpy(out_buf, &fec_harness_seq_net, 4);
+              memcpy(out_buf + 4, buf + 163, 160);
+              
+              sendto(out_sock, out_buf, 164, 0, (struct sockaddr *)&out_addr, sizeof(out_addr));
+            }
+          }
+        }
       }
     }
   }
